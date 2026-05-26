@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors'); 
 const app = express();
 const { Pool } = require('pg');
-
 // ====================================================================
 // CONFIGURACIÓN DE SERVIDOR PARA LA NUBE (RENDER + FIREBASE)
 // ====================================================================
