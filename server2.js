@@ -8,7 +8,11 @@ const { Pool } = require('pg');
 // ====================================================================
 
 // 1. CORS abierto temporalmente para asegurar la comunicación con Firebase
-app.use(cors());
+app.use(cors({
+    origin: '*', // Permite conexiones de cualquier origen
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization'] // Clave para las peticiones con JSON
+}));
 app.use(express.json());
 
 // 2. Puerto dinámico (Render asignará uno automáticamente, si no, usa el 3001 en local)
