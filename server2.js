@@ -777,9 +777,238 @@ app.post('/api/corte/finalizar', async (req, res) => {
     }
 });
 
-// ====================================================================
-// INICIALIZACIÓN DEL SERVIDOR
-// ====================================================================
+
+// Buscar producto por nombre, clave o código interno
+app.get('/api/productos/buscar/:busqueda', async (req, res) => {
+    const { busqueda } = req.params;
+
+    try {
+        const query = `
+            SELECT 
+                id_producto AS id,
+                clave_producto,
+                codigo_interno,
+                nombre,
+                p_venta AS precio_venta,
+                cant_exist
+            FROM mproducto
+            WHERE 
+                LOWER(nombre) LIKE LOWER($1)
+                OR LOWER(clave_producto) LIKE LOWER($1)
+                OR LOWER(COALESCE(codigo_interno, '')) LIKE LOWER($1)
+            ORDER BY nombre ASC
+            LIMIT 10
+        `;
+
+        const result = await pool.query(query, [`%${busqueda}%`]);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error buscando productos:', error.message);
+        res.status(500).json([]);
+    }
+});
+app.post('/api/ventas/registrar', async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const { cliente, items, metodo_pago, estado } = req.body;
+
+        if (!items || !items.item || items.item.length === 0) {
+            return res.json({
+                success: false,
+                message: 'La venta no contiene productos.'
+            });
+        }
+
+        let idMetodoPago = null;
+
+        if (metodo_pago === 'efectivo') idMetodoPago = 1;
+        if (metodo_pago === 'tarjeta') idMetodoPago = 2;
+        if (metodo_pago === 'transferencia') idMetodoPago = 4;
+
+        const estadoVenta = estado || 'completada';
+
+        let totalVenta = 0;
+
+        for (const item of items.item) {
+            totalVenta += Number(item.cantidad) * Number(item.precio_unitario);
+        }
+
+        const ventaResult = await client.query(
+            `
+            INSERT INTO mventas (
+                fec_venta,
+                total_venta,
+                id_usuario_atiende,
+                id_estatus,
+                id_cliente,
+                cliente_nombre,
+                id_metodo_pago,
+                estado_venta
+            )
+            VALUES (
+                CURRENT_TIMESTAMP,
+                $1,
+                $2,
+                $3,
+                NULL,
+                $4,
+                $5,
+                $6
+            )
+            RETURNING id_venta
+            `,
+            [
+                totalVenta,
+                1,
+                1,
+                cliente || 'Mostrador',
+                idMetodoPago,
+                estadoVenta
+            ]
+        );
+
+        const idVenta = ventaResult.rows[0].id_venta;
+
+        for (const item of items.item) {
+            const subtotal = Number(item.cantidad) * Number(item.precio_unitario);
+
+            await client.query(
+                `
+                INSERT INTO dventas (
+                    id_venta,
+                    id_producto,
+                    cantidad,
+                    precio_unitario,
+                    subtotal
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                `,
+                [
+                    idVenta,
+                    item.producto_id,
+                    item.cantidad,
+                    item.precio_unitario,
+                    subtotal
+                ]
+            );
+
+            if (estadoVenta === 'completada') {
+                await client.query(
+                    `
+                    UPDATE mproducto
+                    SET cant_exist = cant_exist - $1
+                    WHERE id_producto = $2
+                    `,
+                    [item.cantidad, item.producto_id]
+                );
+            }
+        }
+
+        await client.query('COMMIT');
+
+        res.json({
+            success: true,
+            venta: {
+                id: idVenta,
+                total: totalVenta
+            }
+        });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error registrando venta:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: 'Error al registrar la venta.'
+        });
+    } finally {
+        client.release();
+    }
+});
+app.get('/api/ventas/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const ventaResult = await pool.query(
+            `
+            SELECT 
+                id_venta AS id,
+                fec_venta,
+                cliente_nombre AS cliente,
+                total_venta AS total,
+                estado_venta
+            FROM mventas
+            WHERE id_venta = $1
+            `,
+            [id]
+        );
+
+        if (ventaResult.rows.length === 0) {
+            return res.json({
+                success: false,
+                message: 'Venta no encontrada.'
+            });
+        }
+
+        const detalleResult = await pool.query(
+            `
+            SELECT 
+                dv.id_detalle_v,
+                dv.id_producto,
+                p.nombre,
+                dv.cantidad,
+                dv.precio_unitario,
+                dv.subtotal
+            FROM dventas dv
+            INNER JOIN mproducto p ON dv.id_producto = p.id_producto
+            WHERE dv.id_venta = $1
+            `,
+            [id]
+        );
+
+        const venta = ventaResult.rows[0];
+        venta.detalles = detalleResult.rows;
+
+        res.json({
+            success: true,
+            venta
+        });
+
+    } catch (error) {
+        console.error('Error buscando venta:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Error al buscar la venta.'
+        });
+    }
+});
+app.get('/api/ventas/espera', async (req, res) => {
+    try {
+        const result = await pool.query(
+            `
+            SELECT 
+                id_venta AS id,
+                cliente_nombre AS cliente,
+                TO_CHAR(fec_venta, 'YYYY-MM-DD') AS fecha,
+                TO_CHAR(fec_venta, 'HH24:MI') AS hora,
+                total_venta AS total
+            FROM mventas
+            WHERE estado_venta = 'en_espera'
+            ORDER BY fec_venta DESC
+            `
+        );
+
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error obteniendo ventas en espera:', error.message);
+        res.status(500).json([]);
+    }
+});
+
 
 app.listen(PORT, () => {
     console.log(`🚀 Servidor SiWeTCI (Papelería Yanina) activo en el puerto ${PORT}`);
