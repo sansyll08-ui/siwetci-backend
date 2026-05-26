@@ -1,9 +1,7 @@
 const express = require('express');
 const cors = require('cors'); 
-const { Pool } = require('pg');
 const app = express();
-const dns = require('dns');
-dns.setDefaultResultOrder('ipv4first');
+const { Pool } = require('pg');
 
 // ====================================================================
 // CONFIGURACIÓN DE SERVIDOR PARA LA NUBE (RENDER + FIREBASE)
@@ -20,16 +18,24 @@ const PORT = process.env.PORT || 3001;
 // 0. CONFIGURACIÓN DE BASE DE DATOS (SUPABASE)
 // ====================================================================
 const pool = new Pool({
-    user: 'postgres',
-    host: 'db.jhidmcagbndgfhomkyrz.supabase.co',
+    user: 'postgres.jhidmcagbndgfhomkyrz', // Usa el formato de usuario del Pooler
+    password: 'M4rv1n$4nS3020',
+    host: 'aws-0-us-east-1.pooler.supabase.com', // Cambia esto por el host del Pooler de tu Supabase
     database: 'postgres',
-    password: 'M4rv1n$4nS3020', // Asegúrate de que esta sea la correcta
-    port: 5432,
+    port: 6543, // EL PUERTO ES 6543 PARA EL POOLER
     ssl: {
         rejectUnauthorized: false
     }
 });
 
+// Prueba de conexión inmediata para ver qué pasa
+pool.connect((err, client, release) => {
+    if (err) {
+        return console.error('Error al conectar al Pooler:', err.stack);
+    }
+    console.log('¡Conexión exitosa a Supabase vía Pooler!');
+    release();
+});
 let CATALOG_MAP = {};
 
 // ====================================================================
