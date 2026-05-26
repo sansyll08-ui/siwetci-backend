@@ -18,10 +18,10 @@ const PORT = process.env.PORT || 3001;
 // 0. CONFIGURACIÓN DE BASE DE DATOS (SUPABASE)
 // ====================================================================
 const pool = new Pool({
-    // REEMPLAZA "PON_TU_CONTRASEÑA_AQUI" CON TU CONTRASEÑA REAL
-    connectionString: 'postgresql://postgres:M4rv1n$4nS3020@db.jhidmcagbndgfhomkyrz.supabase.co:5432/postgres',
+    connectionString: 'postgresql://postgres:TU_CONTRASEÑA@db.jhidmcagbndgfhomkyrz.supabase.co:5432/postgres',
+    host: 'db.jhidmcagbndgfhomkyrz.supabase.co', // <--- AGREGA ESTA LÍNEA
     ssl: {
-        rejectUnauthorized: false // Obligatorio para conexiones en la nube
+        rejectUnauthorized: false
     }
 });
 
