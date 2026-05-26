@@ -946,6 +946,329 @@ app.post('/api/ventas/registrar', async (req, res) => {
         client.release();
     }
 });
+// ============================================================
+// API: LISTAR VENTAS CON FILTROS
+// Esta ruta es necesaria para el nuevo módulo de Ventas del POS
+// ============================================================
+app.get('/api/ventas', async (req, res) => {
+    const {
+        busqueda = '',
+        estado = '',
+        fecha_inicio = '',
+        fecha_fin = ''
+    } = req.query;
+
+    try {
+        const filtros = [];
+        const values = [];
+
+        if (busqueda.trim()) {
+            values.push(`%${busqueda.trim()}%`);
+            filtros.push(`
+                (
+                    CAST(v.id_venta AS TEXT) ILIKE $${values.length}
+                    OR COALESCE(v.cliente_nombre, 'Mostrador') ILIKE $${values.length}
+                    OR COALESCE(v.estado_venta, '') ILIKE $${values.length}
+                )
+            `);
+        }
+
+        if (estado.trim()) {
+            values.push(estado.trim());
+            filtros.push(`v.estado_venta = $${values.length}`);
+        }
+
+        if (fecha_inicio.trim()) {
+            values.push(fecha_inicio.trim());
+            filtros.push(`DATE(v.fec_venta) >= $${values.length}`);
+        }
+
+        if (fecha_fin.trim()) {
+            values.push(fecha_fin.trim());
+            filtros.push(`DATE(v.fec_venta) <= $${values.length}`);
+        }
+
+        const where = filtros.length > 0
+            ? `WHERE ${filtros.join(' AND ')}`
+            : '';
+
+        const result = await pool.query(`
+            SELECT 
+                v.id_venta AS id,
+                TO_CHAR(v.fec_venta, 'YYYY-MM-DD') AS fecha,
+                TO_CHAR(v.fec_venta, 'HH24:MI') AS hora,
+                v.fec_venta,
+                COALESCE(v.cliente_nombre, 'Mostrador') AS cliente,
+                CASE 
+                    WHEN v.id_metodo_pago = 1 THEN 'efectivo'
+                    WHEN v.id_metodo_pago = 2 THEN 'tarjeta'
+                    WHEN v.id_metodo_pago = 4 THEN 'transferencia'
+                    ELSE 'N/A'
+                END AS metodo_pago,
+                COALESCE(v.estado_venta, 'completada') AS estado_venta,
+                v.total_venta AS total
+            FROM mventas v
+            ${where}
+            ORDER BY v.fec_venta DESC
+            LIMIT 300
+        `, values);
+
+        res.json({
+            success: true,
+            ventas: result.rows
+        });
+
+    } catch (error) {
+        console.error('Error listando ventas:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+});
+// ============================================================
+// API: CANCELAR VENTA
+// Regresa productos al inventario si la venta estaba completada
+// ============================================================
+app.patch('/api/ventas/:id/cancelar', async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const { id } = req.params;
+        const { motivo } = req.body;
+
+        const ventaResult = await client.query(`
+            SELECT id_venta, estado_venta
+            FROM mventas
+            WHERE id_venta = $1
+        `, [id]);
+
+        if (ventaResult.rows.length === 0) {
+            throw new Error('La venta no existe.');
+        }
+
+        const venta = ventaResult.rows[0];
+
+        if (venta.estado_venta === 'cancelada') {
+            throw new Error('Esta venta ya está cancelada.');
+        }
+
+        if (venta.estado_venta === 'devuelta') {
+            throw new Error('No se puede cancelar una venta devuelta.');
+        }
+
+        if (venta.estado_venta === 'completada') {
+            const detallesResult = await client.query(`
+                SELECT id_producto, cantidad
+                FROM dventas
+                WHERE id_venta = $1
+            `, [id]);
+
+            for (const item of detallesResult.rows) {
+                await client.query(`
+                    UPDATE mproducto
+                    SET cant_exist = cant_exist + $1
+                    WHERE id_producto = $2
+                `, [
+                    item.cantidad,
+                    item.id_producto
+                ]);
+            }
+        }
+
+        await client.query(`
+            UPDATE mventas
+            SET 
+                estado_venta = 'cancelada',
+                id_estatus = 0
+            WHERE id_venta = $1
+        `, [id]);
+
+        await client.query('COMMIT');
+
+        res.json({
+            success: true,
+            message: motivo || 'Venta cancelada correctamente.'
+        });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+
+        console.error('Error cancelando venta:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    } finally {
+        client.release();
+    }
+});
+// ============================================================
+// API: MODIFICAR VENTA
+// Recalcula productos, total e inventario
+// ============================================================
+app.put('/api/ventas/:id', async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const { id } = req.params;
+        const { cliente, items, metodo_pago, estado } = req.body;
+
+        if (!items || !items.item || items.item.length === 0) {
+            throw new Error('La venta no contiene productos.');
+        }
+
+        const ventaActualResult = await client.query(`
+            SELECT id_venta, estado_venta
+            FROM mventas
+            WHERE id_venta = $1
+        `, [id]);
+
+        if (ventaActualResult.rows.length === 0) {
+            throw new Error('La venta no existe.');
+        }
+
+        const ventaActual = ventaActualResult.rows[0];
+
+        if (ventaActual.estado_venta === 'cancelada' || ventaActual.estado_venta === 'devuelta') {
+            throw new Error('No se puede modificar una venta cancelada o devuelta.');
+        }
+
+        const detallesAnteriores = await client.query(`
+            SELECT id_producto, cantidad
+            FROM dventas
+            WHERE id_venta = $1
+        `, [id]);
+
+        if (ventaActual.estado_venta === 'completada') {
+            for (const item of detallesAnteriores.rows) {
+                await client.query(`
+                    UPDATE mproducto
+                    SET cant_exist = cant_exist + $1
+                    WHERE id_producto = $2
+                `, [
+                    item.cantidad,
+                    item.id_producto
+                ]);
+            }
+        }
+
+        await client.query(`
+            DELETE FROM dventas
+            WHERE id_venta = $1
+        `, [id]);
+
+        let idMetodoPago = null;
+
+        if (metodo_pago === 'efectivo') idMetodoPago = 1;
+        if (metodo_pago === 'tarjeta') idMetodoPago = 2;
+        if (metodo_pago === 'transferencia') idMetodoPago = 4;
+
+        const estadoVenta = estado || 'completada';
+
+        let totalVenta = 0;
+
+        for (const item of items.item) {
+            totalVenta += Number(item.cantidad) * Number(item.precio_unitario);
+        }
+
+        await client.query(`
+            UPDATE mventas
+            SET 
+                cliente_nombre = $1,
+                total_venta = $2,
+                id_metodo_pago = $3,
+                estado_venta = $4
+            WHERE id_venta = $5
+        `, [
+            cliente || 'Mostrador',
+            totalVenta,
+            idMetodoPago,
+            estadoVenta,
+            id
+        ]);
+
+        for (const item of items.item) {
+            const cantidad = Number(item.cantidad);
+            const precio = Number(item.precio_unitario);
+            const subtotal = cantidad * precio;
+
+            const productoResult = await client.query(`
+                SELECT nombre, cant_exist
+                FROM mproducto
+                WHERE id_producto = $1
+            `, [item.producto_id]);
+
+            if (productoResult.rows.length === 0) {
+                throw new Error(`Producto ${item.producto_id} no encontrado.`);
+            }
+
+            const producto = productoResult.rows[0];
+
+            if (estadoVenta === 'completada' && Number(producto.cant_exist) < cantidad) {
+                throw new Error(`Stock insuficiente para ${producto.nombre}.`);
+            }
+
+            await client.query(`
+                INSERT INTO dventas (
+                    id_venta,
+                    id_producto,
+                    cantidad,
+                    precio_unitario,
+                    subtotal
+                )
+                VALUES ($1, $2, $3, $4, $5)
+            `, [
+                id,
+                item.producto_id,
+                cantidad,
+                precio,
+                subtotal
+            ]);
+
+            if (estadoVenta === 'completada') {
+                await client.query(`
+                    UPDATE mproducto
+                    SET cant_exist = cant_exist - $1
+                    WHERE id_producto = $2
+                `, [
+                    cantidad,
+                    item.producto_id
+                ]);
+            }
+        }
+
+        await client.query('COMMIT');
+
+        res.json({
+            success: true,
+            venta: {
+                id: Number(id),
+                total: totalVenta,
+                estado: estadoVenta
+            },
+            message: 'Venta actualizada correctamente.'
+        });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+
+        console.error('Error actualizando venta:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    } finally {
+        client.release();
+    }
+});
 app.get('/api/ventas/espera', async (req, res) => {
     try {
         const result = await pool.query(`
