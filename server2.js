@@ -1228,6 +1228,110 @@ app.post('/api/facturas/registrar', async (req, res) => {
     }
 });
 
+
+app.put('/api/productos/:id', async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const { id } = req.params;
+        const p = req.body;
+
+        const id_marca = await getOrInsertId('marca', p.marca_txt);
+        const id_tip_product = await getOrInsertId('tipoproducto', p.tipo_product_txt);
+        const id_color = await getOrInsertId('color', p.color_txt);
+        const id_unidad = await getOrInsertId('unidadmedida', p.unidad_medida_txt);
+        const id_ubicacion = await getOrInsertId('ubicacion', p.ubicacion_txt);
+
+        const existeCodigo = await client.query(
+            `
+            SELECT id_producto
+            FROM mproducto
+            WHERE codigo_interno = $1
+              AND id_producto != $2
+            `,
+            [p.codigo_interno, id]
+        );
+
+        if (existeCodigo.rows.length > 0) {
+            await client.query('ROLLBACK');
+
+            return res.status(400).json({
+                success: false,
+                message: 'El código interno ya pertenece a otro producto.'
+            });
+        }
+
+        await client.query(
+            `
+            UPDATE mproducto
+            SET 
+                clave_producto = $1,
+                codigo_interno = $2,
+                nombre = $3,
+                tamano = $4,
+                id_unidad = $5,
+                imagen_url = $6,
+                cant_exist = $7,
+                stock_min = $8,
+                stock_max = $9,
+                id_ubicacion = $10,
+                p_costo = $11,
+                p_venta = $12,
+                fec_caducidad = $13,
+                id_marca = $14,
+                id_tip_product = $15,
+                id_color = $16,
+                id_proveedor = $17,
+                id_estatus = $18,
+                fec_modificacion = CURRENT_TIMESTAMP
+            WHERE id_producto = $19
+            `,
+            [
+                p.clave_producto,
+                p.codigo_interno || p.clave_producto,
+                p.nombre,
+                p.tamano || null,
+                id_unidad,
+                p.imagen_url || null,
+                p.cant_exist || 0,
+                p.stock_min || 5,
+                p.stock_max || 100,
+                id_ubicacion,
+                p.p_costo || 0,
+                p.p_venta || 0,
+                p.fec_caducidad || null,
+                id_marca,
+                id_tip_product,
+                id_color,
+                p.id_proveedor || null,
+                p.id_estatus || 1,
+                id
+            ]
+        );
+
+        await client.query('COMMIT');
+
+        res.json({
+            success: true,
+            message: 'Producto actualizado correctamente.'
+        });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+
+        console.error('Error actualizando producto:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Error al actualizar el producto.'
+        });
+    } finally {
+        client.release();
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`🚀 Servidor SiWeTCI (Papelería Yanina) activo en el puerto ${PORT}`);
 });
