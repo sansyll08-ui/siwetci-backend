@@ -1012,6 +1012,222 @@ app.get('/api/ventas/:id', async (req, res) => {
     }
 });
 
+app.get('/api/devoluciones', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT 
+                id_devolucion,
+                id_venta,
+                fecha_devolucion,
+                motivo,
+                total_devolucion
+            FROM mdevoluciones
+            ORDER BY fecha_devolucion DESC
+            LIMIT 20
+        `);
+
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error obteniendo devoluciones:', error.message);
+        res.status(500).json([]);
+    }
+});
+
+app.post('/api/devoluciones/registrar', async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        const { id_venta, motivo } = req.body;
+
+        const ventaResult = await client.query(`
+            SELECT id_venta, total_venta, estado_venta
+            FROM mventas
+            WHERE id_venta = $1
+        `, [id_venta]);
+
+        if (ventaResult.rows.length === 0) {
+            throw new Error('La venta no existe.');
+        }
+
+        const venta = ventaResult.rows[0];
+
+        if (venta.estado_venta === 'devuelta') {
+            throw new Error('Esta venta ya fue devuelta anteriormente.');
+        }
+
+        const detallesResult = await client.query(`
+            SELECT id_producto, cantidad, precio_unitario, subtotal
+            FROM dventas
+            WHERE id_venta = $1
+        `, [id_venta]);
+
+        const devolucionResult = await client.query(`
+            INSERT INTO mdevoluciones (
+                id_venta,
+                motivo,
+                total_devolucion,
+                id_usuario
+            )
+            VALUES ($1, $2, $3, $4)
+            RETURNING id_devolucion
+        `, [
+            id_venta,
+            motivo || 'Devolución registrada desde POS',
+            venta.total_venta,
+            1
+        ]);
+
+        const idDevolucion = devolucionResult.rows[0].id_devolucion;
+
+        for (const item of detallesResult.rows) {
+            await client.query(`
+                INSERT INTO ddevoluciones (
+                    id_devolucion,
+                    id_producto,
+                    cantidad,
+                    precio_unitario,
+                    subtotal
+                )
+                VALUES ($1, $2, $3, $4, $5)
+            `, [
+                idDevolucion,
+                item.id_producto,
+                item.cantidad,
+                item.precio_unitario,
+                item.subtotal
+            ]);
+
+            await client.query(`
+                UPDATE mproducto
+                SET cant_exist = cant_exist + $1
+                WHERE id_producto = $2
+            `, [
+                item.cantidad,
+                item.id_producto
+            ]);
+        }
+
+        await client.query(`
+            UPDATE mventas
+            SET estado_venta = 'devuelta'
+            WHERE id_venta = $1
+        `, [id_venta]);
+
+        await client.query('COMMIT');
+
+        res.json({
+            success: true,
+            id_devolucion: idDevolucion,
+            message: 'Devolución registrada correctamente.'
+        });
+
+    } catch (error) {
+        await client.query('ROLLBACK');
+
+        console.error('Error registrando devolución:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    } finally {
+        client.release();
+    }
+});
+
+
+// ============================================================
+// API: FACTURAS
+// ============================================================
+
+app.get('/api/facturas', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT 
+                id_factura,
+                id_venta,
+                fecha_factura,
+                rfc_cliente,
+                razon_social,
+                total_factura,
+                estado_factura
+            FROM mfacturas
+            ORDER BY fecha_factura DESC
+            LIMIT 20
+        `);
+
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error obteniendo facturas:', error.message);
+        res.status(500).json([]);
+    }
+});
+
+app.post('/api/facturas/registrar', async (req, res) => {
+    try {
+        const {
+            id_venta,
+            rfc_cliente,
+            razon_social,
+            uso_cfdi,
+            regimen_fiscal,
+            total_factura
+        } = req.body;
+
+        const ventaResult = await pool.query(`
+            SELECT id_venta, total_venta
+            FROM mventas
+            WHERE id_venta = $1
+        `, [id_venta]);
+
+        if (ventaResult.rows.length === 0) {
+            return res.json({
+                success: false,
+                message: 'La venta no existe.'
+            });
+        }
+
+        const venta = ventaResult.rows[0];
+
+        const facturaResult = await pool.query(`
+            INSERT INTO mfacturas (
+                id_venta,
+                rfc_cliente,
+                razon_social,
+                uso_cfdi,
+                regimen_fiscal,
+                total_factura,
+                estado_factura
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, 'generada')
+            RETURNING id_factura
+        `, [
+            id_venta,
+            rfc_cliente || null,
+            razon_social || null,
+            uso_cfdi || null,
+            regimen_fiscal || null,
+            total_factura || venta.total_venta
+        ]);
+
+        res.json({
+            success: true,
+            id_factura: facturaResult.rows[0].id_factura,
+            message: 'Factura generada correctamente.'
+        });
+
+    } catch (error) {
+        console.error('Error generando factura:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: 'Error al generar factura.'
+        });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`🚀 Servidor SiWeTCI (Papelería Yanina) activo en el puerto ${PORT}`);
 });
