@@ -1931,6 +1931,191 @@ app.put('/api/productos/:id', async (req, res) => {
     }
 });
 
+
+// ====================================================================
+// API: RESUMEN PROFESIONAL DE INVENTARIO
+// ====================================================================
+app.get('/api/inventario/resumen', async (req, res) => {
+    try {
+        const indicadores = await pool.query(`
+            SELECT
+                COUNT(*)::int AS total_productos,
+                COUNT(*) FILTER (WHERE COALESCE(id_estatus, 1) = 1)::int AS productos_activos,
+                COALESCE(SUM(cant_exist), 0)::float AS unidades_totales,
+
+                COALESCE(SUM(cant_exist * p_costo), 0)::float AS valor_costo,
+                COALESCE(SUM(cant_exist * p_venta), 0)::float AS valor_venta,
+                COALESCE(SUM(cant_exist * (p_venta - p_costo)), 0)::float AS utilidad_potencial,
+
+                COALESCE(
+                    AVG(
+                        CASE 
+                            WHEN p_venta > 0 THEN ((p_venta - p_costo) / p_venta) * 100
+                            ELSE 0
+                        END
+                    ),
+                    0
+                )::float AS margen_promedio,
+
+                COUNT(*) FILTER (WHERE cant_exist <= stock_min)::int AS stock_critico,
+                COUNT(*) FILTER (WHERE cant_exist = 0)::int AS sin_stock,
+                COUNT(*) FILTER (WHERE stock_max > 0 AND cant_exist > stock_max)::int AS sobre_stock,
+                COUNT(*) FILTER (WHERE codigo_interno IS NULL OR TRIM(codigo_interno) = '')::int AS sin_codigo,
+                COUNT(*) FILTER (WHERE id_tip_product IS NULL)::int AS sin_categoria
+            FROM mproducto
+        `);
+
+        const porCategoria = await pool.query(`
+            SELECT
+                COALESCE(tp.des_tipo_producto, 'Sin categoría') AS categoria,
+                COUNT(p.id_producto)::int AS productos,
+                COALESCE(SUM(p.cant_exist), 0)::float AS unidades,
+                COALESCE(SUM(p.cant_exist * p.p_costo), 0)::float AS valor_costo,
+                COALESCE(SUM(p.cant_exist * p.p_venta), 0)::float AS valor_venta,
+                COALESCE(SUM(p.cant_exist * (p.p_venta - p.p_costo)), 0)::float AS utilidad_potencial
+            FROM mproducto p
+            LEFT JOIN ctipoproducto tp ON p.id_tip_product = tp.id_tipo_producto
+            GROUP BY categoria
+            ORDER BY valor_costo DESC
+            LIMIT 8
+        `);
+
+        const stockCritico = await pool.query(`
+            SELECT
+                id_producto,
+                codigo_interno,
+                clave_producto,
+                nombre,
+                cant_exist,
+                stock_min,
+                stock_max,
+                p_venta
+            FROM mproducto
+            WHERE cant_exist <= stock_min
+            ORDER BY cant_exist ASC, nombre ASC
+            LIMIT 8
+        `);
+
+        const sinStock = await pool.query(`
+            SELECT
+                id_producto,
+                codigo_interno,
+                clave_producto,
+                nombre,
+                cant_exist,
+                stock_min,
+                p_venta
+            FROM mproducto
+            WHERE cant_exist = 0
+            ORDER BY nombre ASC
+            LIMIT 8
+        `);
+
+        const sobreStock = await pool.query(`
+            SELECT
+                id_producto,
+                codigo_interno,
+                clave_producto,
+                nombre,
+                cant_exist,
+                stock_max,
+                p_costo,
+                p_venta,
+                (cant_exist - stock_max)::float AS excedente
+            FROM mproducto
+            WHERE stock_max > 0
+              AND cant_exist > stock_max
+            ORDER BY excedente DESC
+            LIMIT 8
+        `);
+
+        const mayorValor = await pool.query(`
+            SELECT
+                id_producto,
+                codigo_interno,
+                clave_producto,
+                nombre,
+                cant_exist,
+                p_costo,
+                p_venta,
+                (cant_exist * p_costo)::float AS valor_invertido
+            FROM mproducto
+            ORDER BY valor_invertido DESC
+            LIMIT 8
+        `);
+
+        const bajaRotacion = await pool.query(`
+            SELECT
+                p.id_producto,
+                p.codigo_interno,
+                p.clave_producto,
+                p.nombre,
+                p.cant_exist,
+                p.p_venta,
+                COALESCE(SUM(
+                    CASE 
+                        WHEN mv.id_venta IS NOT NULL THEN dv.cantidad
+                        ELSE 0
+                    END
+                ), 0)::float AS unidades_vendidas
+            FROM mproducto p
+            LEFT JOIN dventas dv ON p.id_producto = dv.id_producto
+            LEFT JOIN mventas mv ON dv.id_venta = mv.id_venta
+                AND COALESCE(mv.estado_venta, 'completada') = 'completada'
+                AND COALESCE(mv.id_estatus, 1) = 1
+                AND mv.fec_venta >= CURRENT_DATE - INTERVAL '90 days'
+            GROUP BY p.id_producto, p.codigo_interno, p.clave_producto, p.nombre, p.cant_exist, p.p_venta
+            HAVING COALESCE(SUM(
+                CASE 
+                    WHEN mv.id_venta IS NOT NULL THEN dv.cantidad
+                    ELSE 0
+                END
+            ), 0) <= 2
+            ORDER BY unidades_vendidas ASC, p.cant_exist DESC
+            LIMIT 8
+        `);
+
+        const inventarioAntiguo = await pool.query(`
+            SELECT
+                id_producto,
+                codigo_interno,
+                clave_producto,
+                nombre,
+                cant_exist,
+                p_venta,
+                fec_registro,
+                CONCAT(
+                    GREATEST((CURRENT_DATE - COALESCE(fec_registro, CURRENT_DATE)::date), 0),
+                    ' días'
+                ) AS antiguedad
+            FROM mproducto
+            WHERE COALESCE(fec_registro, CURRENT_DATE)::date <= CURRENT_DATE - INTERVAL '10 months'
+            ORDER BY fec_registro ASC
+            LIMIT 8
+        `);
+
+        res.json({
+            success: true,
+            indicadores: indicadores.rows[0],
+            porCategoria: porCategoria.rows,
+            stockCritico: stockCritico.rows,
+            sinStock: sinStock.rows,
+            sobreStock: sobreStock.rows,
+            mayorValor: mayorValor.rows,
+            bajaRotacion: bajaRotacion.rows,
+            inventarioAntiguo: inventarioAntiguo.rows
+        });
+
+    } catch (error) {
+        console.error('❌ Error en resumen de inventario:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`🚀 Servidor SiWeTCI (Papelería Yanina) activo en el puerto ${PORT}`);
 });
