@@ -630,11 +630,14 @@ app.post('/api/usuarios/cambiar-password', async (req, res) => {
 
 app.get('/api/dashboard/stats', async (req, res) => {
     try {
+        // 1. KPIs Financieros
         const v = await pool.query("SELECT COALESCE(SUM(total_venta), 0) as total FROM mventas WHERE id_estatus = 1");
         const c = await pool.query("SELECT COALESCE(SUM(total_compra), 0) as total FROM mcompras");
         const p = await pool.query("SELECT COUNT(*) as total FROM mpedidos WHERE id_estatus_pedido = 1");
         const s = await pool.query("SELECT COUNT(*) as total FROM mproducto WHERE cant_exist <= stock_min");
 
+        // 2. Cartera de Proveedores (LO QUE FALTA)
+        // Unimos mcompras con mpersona para obtener los nombres de los proveedores
         const topProv = await pool.query(`
             SELECT
                 TRIM(CONCAT(cn.des_nombre, ' ', ca1.des_apellido, ' ', ca2.des_apellido)) as proveedor, 
@@ -649,6 +652,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
             LIMIT 5
         `);
 
+        // 3. Fidelidad de Clientes (mventas -> mpersona vía id_cliente)
         const topClientes = await pool.query(`
             SELECT 
                 TRIM(CONCAT(cn.des_nombre, ' ', ca1.des_apellido, ' ', ca2.des_apellido)) as cliente, 
@@ -662,44 +666,49 @@ app.get('/api/dashboard/stats', async (req, res) => {
             GROUP BY cliente ORDER BY total DESC LIMIT 5
         `);
 
+        // 4. Artículos Estrella (Basado en dventas)
         const topArticulos = await pool.query(`
             SELECT pr.nombre, SUM(dv.cantidad) as total_vendido
             FROM dventas dv
             JOIN mproducto pr ON dv.id_producto = pr.id_producto
             GROUP BY pr.nombre ORDER BY total_vendido DESC LIMIT 5
         `);
+        // 1. Tendencia Semanal
+const tendencia = await pool.query(`
+    SELECT 
+        to_char(fec_venta::date, 'DD/MM') as fecha, 
+        SUM(total_venta)::float as total,
+        fec_venta::date as dia
+    FROM mventas
+    WHERE fec_venta >= (CURRENT_DATE - INTERVAL '7 days')
+      AND id_estatus = 1
+    GROUP BY fec_venta::date
+    ORDER BY dia ASC
+`);
 
-        const tendencia = await pool.query(`
-            SELECT 
-                to_char(fec_venta::date, 'DD/MM') as fecha, 
-                SUM(total_venta)::float as total,
-                fec_venta::date as dia
-            FROM mventas
-            WHERE fec_venta >= (CURRENT_DATE - INTERVAL '7 days')
-              AND id_estatus = 1
-            GROUP BY fec_venta::date
-            ORDER BY dia ASC
-        `);
+// 2. Mix de Ventas por Categoría (Suponiendo tabla cTipoProducto)
+const categorias = await pool.query(`
+    SELECT tp.des_tipo_producto as categoria, SUM(dv.subtotal) as total
+    FROM dventas dv
+    JOIN mproducto p ON dv.id_producto = p.id_producto
+    JOIN ctipoproducto tp ON p.id_tip_product = tp.id_tipo_producto
+    GROUP BY categoria
+    ORDER BY total DESC
+`);
 
-        const categorias = await pool.query(`
-            SELECT tp.des_tipo_producto as categoria, SUM(dv.subtotal) as total
-            FROM dventas dv
-            JOIN mproducto p ON dv.id_producto = p.id_producto
-            JOIN ctipoproducto tp ON p.id_tip_product = tp.id_tipo_producto
-            GROUP BY categoria
-            ORDER BY total DESC
-        `);
+// 3. Eficiencia de Stock (Productos más vendidos vs su existencia actual)
+const stockEficiencia = await pool.query(`
+    SELECT nombre, cant_exist, stock_min
+    FROM mproducto
+    WHERE cant_exist <= (stock_min * 1.5) -- Productos cerca del límite
+    LIMIT 5
+`);
 
-        const stockEficiencia = await pool.query(`
-            SELECT nombre, cant_exist, stock_min
-            FROM mproducto
-            WHERE cant_exist <= (stock_min * 1.5)
-            LIMIT 5
-        `);
-
+        // 5. Inventario y Listados
         const inventarioInfo = await pool.query("SELECT nombre, cant_exist, stock_max FROM mproducto ORDER BY cant_exist ASC LIMIT 5");
         const nuevos = await pool.query("SELECT nombre, p_venta FROM mproducto ORDER BY fec_registro DESC LIMIT 5");
 
+        // 👇 AQUÍ ESTÁ LA SOLUCIÓN: Agregamos tendencia, categorias y stockEficiencia
         res.json({
             success: true,
             ventas: parseFloat(v.rows[0].total),
@@ -712,6 +721,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
             topArticulos: topArticulos.rows,
             inventario: inventarioInfo.rows,
             nuevos: nuevos.rows,
+            // Variables añadidas para que el Dashboard las pueda leer:
             tendencia: tendencia.rows,
             categorias: categorias.rows,
             stockEficiencia: stockEficiencia.rows
