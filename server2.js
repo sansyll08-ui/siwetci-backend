@@ -929,23 +929,46 @@ app.post('/api/ventas/registrar', async (req, res) => {
         client.release();
     }
 });
+app.get('/api/ventas/espera', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT 
+                id_venta AS id,
+                COALESCE(cliente_nombre, 'Mostrador') AS cliente,
+                TO_CHAR(fec_venta, 'YYYY-MM-DD') AS fecha,
+                TO_CHAR(fec_venta, 'HH24:MI') AS hora,
+                total_venta AS total
+            FROM mventas
+            WHERE estado_venta = 'en_espera'
+            ORDER BY fec_venta DESC
+        `);
+
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Error obteniendo ventas en espera:', error.message);
+        res.status(500).json([]);
+    }
+});
+
+
+// ============================================================
+// BUSCAR VENTA POR ID / TICKET
+// ESTA RUTA VA DESPUÉS
+// ============================================================
 app.get('/api/ventas/:id', async (req, res) => {
     const { id } = req.params;
 
     try {
-        const ventaResult = await pool.query(
-            `
+        const ventaResult = await pool.query(`
             SELECT 
                 id_venta AS id,
                 fec_venta,
-                cliente_nombre AS cliente,
+                COALESCE(cliente_nombre, 'Mostrador') AS cliente,
                 total_venta AS total,
                 estado_venta
             FROM mventas
             WHERE id_venta = $1
-            `,
-            [id]
-        );
+        `, [id]);
 
         if (ventaResult.rows.length === 0) {
             return res.json({
@@ -954,21 +977,22 @@ app.get('/api/ventas/:id', async (req, res) => {
             });
         }
 
-        const detalleResult = await pool.query(
-            `
+        const detalleResult = await pool.query(`
             SELECT 
                 dv.id_detalle_v,
                 dv.id_producto,
                 p.nombre,
+                p.clave_producto,
+                p.codigo_interno,
+                p.cant_exist,
                 dv.cantidad,
                 dv.precio_unitario,
                 dv.subtotal
             FROM dventas dv
             INNER JOIN mproducto p ON dv.id_producto = p.id_producto
             WHERE dv.id_venta = $1
-            `,
-            [id]
-        );
+            ORDER BY dv.id_detalle_v ASC
+        `, [id]);
 
         const venta = ventaResult.rows[0];
         venta.detalles = detalleResult.rows;
@@ -980,35 +1004,13 @@ app.get('/api/ventas/:id', async (req, res) => {
 
     } catch (error) {
         console.error('Error buscando venta:', error.message);
+
         res.status(500).json({
             success: false,
             message: 'Error al buscar la venta.'
         });
     }
 });
-app.get('/api/ventas/espera', async (req, res) => {
-    try {
-        const result = await pool.query(
-            `
-            SELECT 
-                id_venta AS id,
-                cliente_nombre AS cliente,
-                TO_CHAR(fec_venta, 'YYYY-MM-DD') AS fecha,
-                TO_CHAR(fec_venta, 'HH24:MI') AS hora,
-                total_venta AS total
-            FROM mventas
-            WHERE estado_venta = 'en_espera'
-            ORDER BY fec_venta DESC
-            `
-        );
-
-        res.json(result.rows);
-    } catch (error) {
-        console.error('Error obteniendo ventas en espera:', error.message);
-        res.status(500).json([]);
-    }
-});
-
 
 app.listen(PORT, () => {
     console.log(`🚀 Servidor SiWeTCI (Papelería Yanina) activo en el puerto ${PORT}`);
