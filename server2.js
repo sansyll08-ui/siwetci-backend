@@ -18,12 +18,11 @@ const PORT = process.env.PORT || 3001;
 // 0. CONFIGURACIÓN DE BASE DE DATOS (SUPABASE)
 // ====================================================================
 const pool = new Pool({
-    // El usuario debe incluir el prefijo del proyecto
-    user: 'postgres.jhidmcagbndgfhomkyrz', 
+    user: 'postgres.jhidmcagbndgfhomkyrz', // <--- Ajustado con tu ID
     password: 'M4rv1n$4nS3020',
-    host: 'db.jhidmcagbndgfhomkyrz.supabase.co', 
+    host: 'aws-0-us-east-1.pooler.supabase.com', // <--- Host del Pooler
     database: 'postgres',
-    port: 6543,
+    port: 6543, // <--- Puerto del Pooler
     ssl: {
         rejectUnauthorized: false
     }
