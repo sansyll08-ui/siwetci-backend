@@ -645,111 +645,318 @@ app.post('/api/usuarios/cambiar-password', async (req, res) => {
 // 6. API: ESTADÍSTICAS PARA EL DASHBOARD
 // ====================================================================
 
+/* ============================================================================
+   API: DASHBOARD INTELIGENTE / BUSINESS INTELLIGENCE
+============================================================================ */
+
 app.get('/api/dashboard/stats', async (req, res) => {
     try {
-        // 1. KPIs Financieros
-        const v = await pool.query("SELECT COALESCE(SUM(total_venta), 0) as total FROM mventas WHERE id_estatus = 1");
-        const c = await pool.query("SELECT COALESCE(SUM(total_compra), 0) as total FROM mcompras");
-        const p = await pool.query("SELECT COUNT(*) as total FROM mpedidos WHERE id_estatus_pedido = 1");
-        const s = await pool.query("SELECT COUNT(*) as total FROM mproducto WHERE cant_exist <= stock_min");
+        const ventas = await pool.query(`
+            SELECT COALESCE(SUM(total_venta), 0) AS total
+            FROM mventas
+            WHERE COALESCE(estado_venta, 'completada') = 'completada'
+        `);
 
-        // 2. Cartera de Proveedores (LO QUE FALTA)
-        // Unimos mcompras con mpersona para obtener los nombres de los proveedores
-        const topProv = await pool.query(`
+        const compras = await pool.query(`
+            SELECT COALESCE(SUM(total_compra), 0) AS total
+            FROM mcompras
+        `);
+
+        const pedidos = await pool.query(`
+            SELECT COUNT(*) AS total
+            FROM mpedidos
+            WHERE id_estatus_pedido = 1
+        `);
+
+        const stockCritico = await pool.query(`
+            SELECT COUNT(*) AS total
+            FROM mproducto
+            WHERE cant_exist <= stock_min
+        `);
+
+        const totalVentasMes = await pool.query(`
+            SELECT COALESCE(SUM(total_venta), 0) AS total
+            FROM mventas
+            WHERE DATE_TRUNC('month', fec_venta) = DATE_TRUNC('month', CURRENT_DATE)
+              AND COALESCE(estado_venta, 'completada') = 'completada'
+        `);
+
+        const totalVentasHoy = await pool.query(`
+            SELECT COALESCE(SUM(total_venta), 0) AS total
+            FROM mventas
+            WHERE DATE(fec_venta) = CURRENT_DATE
+              AND COALESCE(estado_venta, 'completada') = 'completada'
+        `);
+
+        const ticketPromedio = await pool.query(`
+            SELECT COALESCE(AVG(total_venta), 0) AS promedio
+            FROM mventas
+            WHERE COALESCE(estado_venta, 'completada') = 'completada'
+        `);
+
+        const productosActivos = await pool.query(`
+            SELECT COUNT(*) AS total
+            FROM mproducto
+            WHERE COALESCE(id_estatus, 1) = 1
+        `);
+
+        const topClientes = await pool.query(`
             SELECT
-                TRIM(CONCAT(cn.des_nombre, ' ', ca1.des_apellido, ' ', ca2.des_apellido)) as proveedor, 
-                SUM(mc.total_compra) as total
-            FROM mcompras mc
-            INNER JOIN mpersona p ON mc.id_proveedor = p.id_persona
-            LEFT JOIN cNombre cn ON p.id_nombre = cn.id_nombre
-            LEFT JOIN cApellido ca1 ON p.id_apellido_pat = ca1.id_apellido
-            LEFT JOIN cApellido ca2 ON p.id_apellido_mat = ca2.id_apellido
-            GROUP BY proveedor 
-            ORDER BY total DESC 
+                COALESCE(
+                    NULLIF(TRIM(CONCAT(cn.des_nombre, ' ', ca1.des_apellido, ' ', ca2.des_apellido)), ''),
+                    mv.cliente_nombre,
+                    'Mostrador'
+                ) AS cliente,
+                SUM(mv.total_venta)::float AS total
+            FROM mventas mv
+            LEFT JOIN mpersona p ON mv.id_cliente = p.id_persona
+            LEFT JOIN cnombre cn ON p.id_nombre = cn.id_nombre
+            LEFT JOIN capellido ca1 ON p.id_apellido_pat = ca1.id_apellido
+            LEFT JOIN capellido ca2 ON p.id_apellido_mat = ca2.id_apellido
+            WHERE COALESCE(mv.estado_venta, 'completada') = 'completada'
+            GROUP BY cliente
+            ORDER BY total DESC
             LIMIT 5
         `);
 
-        // 3. Fidelidad de Clientes (mventas -> mpersona vía id_cliente)
-        const topClientes = await pool.query(`
-            SELECT 
-                TRIM(CONCAT(cn.des_nombre, ' ', ca1.des_apellido, ' ', ca2.des_apellido)) as cliente, 
-                SUM(mv.total_venta) as total
-            FROM mventas mv
-            INNER JOIN mpersona p ON mv.id_cliente = p.id_persona
-            LEFT JOIN cNombre cn ON p.id_nombre = cn.id_nombre
-            LEFT JOIN cApellido ca1 ON p.id_apellido_pat = ca1.id_apellido
-            LEFT JOIN cApellido ca2 ON p.id_apellido_mat = ca2.id_apellido
-            WHERE mv.id_estatus = 1
-            GROUP BY cliente ORDER BY total DESC LIMIT 5
+        const topProveedores = await pool.query(`
+            SELECT
+                COALESCE(
+                    NULLIF(TRIM(CONCAT(cn.des_nombre, ' ', ca1.des_apellido, ' ', ca2.des_apellido)), ''),
+                    'Proveedor sin nombre'
+                ) AS proveedor,
+                SUM(mc.total_compra)::float AS total
+            FROM mcompras mc
+            LEFT JOIN mpersona p ON mc.id_proveedor = p.id_persona
+            LEFT JOIN cnombre cn ON p.id_nombre = cn.id_nombre
+            LEFT JOIN capellido ca1 ON p.id_apellido_pat = ca1.id_apellido
+            LEFT JOIN capellido ca2 ON p.id_apellido_mat = ca2.id_apellido
+            GROUP BY proveedor
+            ORDER BY total DESC
+            LIMIT 5
         `);
 
-        // 4. Artículos Estrella (Basado en dventas)
         const topArticulos = await pool.query(`
-            SELECT pr.nombre, SUM(dv.cantidad) as total_vendido
+            SELECT 
+                pr.nombre,
+                SUM(dv.cantidad)::float AS total_vendido,
+                SUM(dv.subtotal)::float AS total
             FROM dventas dv
-            JOIN mproducto pr ON dv.id_producto = pr.id_producto
-            GROUP BY pr.nombre ORDER BY total_vendido DESC LIMIT 5
+            INNER JOIN mproducto pr ON dv.id_producto = pr.id_producto
+            INNER JOIN mventas mv ON dv.id_venta = mv.id_venta
+            WHERE COALESCE(mv.estado_venta, 'completada') = 'completada'
+            GROUP BY pr.nombre
+            ORDER BY total_vendido DESC
+            LIMIT 8
         `);
-        // 1. Tendencia Semanal
-const tendencia = await pool.query(`
-    SELECT 
-        to_char(fec_venta::date, 'DD/MM') as fecha, 
-        SUM(total_venta)::float as total,
-        fec_venta::date as dia
-    FROM mventas
-    WHERE fec_venta >= (CURRENT_DATE - INTERVAL '7 days')
-      AND id_estatus = 1
-    GROUP BY fec_venta::date
-    ORDER BY dia ASC
-`);
 
-// 2. Mix de Ventas por Categoría (Suponiendo tabla cTipoProducto)
-const categorias = await pool.query(`
-    SELECT tp.des_tipo_producto as categoria, SUM(dv.subtotal) as total
-    FROM dventas dv
-    JOIN mproducto p ON dv.id_producto = p.id_producto
-    JOIN ctipoproducto tp ON p.id_tip_product = tp.id_tipo_producto
-    GROUP BY categoria
-    ORDER BY total DESC
-`);
+        const tendencia = await pool.query(`
+            SELECT 
+                TO_CHAR(fec_venta::date, 'DD/MM') AS fecha,
+                SUM(total_venta)::float AS total,
+                fec_venta::date AS dia
+            FROM mventas
+            WHERE fec_venta >= (CURRENT_DATE - INTERVAL '30 days')
+              AND COALESCE(estado_venta, 'completada') = 'completada'
+            GROUP BY fec_venta::date
+            ORDER BY dia ASC
+        `);
 
-// 3. Eficiencia de Stock (Productos más vendidos vs su existencia actual)
-const stockEficiencia = await pool.query(`
-    SELECT nombre, cant_exist, stock_min
-    FROM mproducto
-    WHERE cant_exist <= (stock_min * 1.5) -- Productos cerca del límite
-    LIMIT 5
-`);
+        const ventasPorHora = await pool.query(`
+            SELECT 
+                LPAD(EXTRACT(HOUR FROM fec_venta)::text, 2, '0') || ':00' AS hora,
+                SUM(total_venta)::float AS total,
+                COUNT(*)::int AS ventas
+            FROM mventas
+            WHERE COALESCE(estado_venta, 'completada') = 'completada'
+              AND EXTRACT(HOUR FROM fec_venta) BETWEEN 9 AND 20
+            GROUP BY EXTRACT(HOUR FROM fec_venta)
+            ORDER BY EXTRACT(HOUR FROM fec_venta)
+        `);
 
-        // 5. Inventario y Listados
-        const inventarioInfo = await pool.query("SELECT nombre, cant_exist, stock_max FROM mproducto ORDER BY cant_exist ASC LIMIT 5");
-        const nuevos = await pool.query("SELECT nombre, p_venta FROM mproducto ORDER BY fec_registro DESC LIMIT 5");
+        const ventasPorDia = await pool.query(`
+            SELECT
+                CASE EXTRACT(DOW FROM fec_venta)
+                    WHEN 0 THEN 'Domingo'
+                    WHEN 1 THEN 'Lunes'
+                    WHEN 2 THEN 'Martes'
+                    WHEN 3 THEN 'Miércoles'
+                    WHEN 4 THEN 'Jueves'
+                    WHEN 5 THEN 'Viernes'
+                    WHEN 6 THEN 'Sábado'
+                END AS dia,
+                EXTRACT(DOW FROM fec_venta) AS orden,
+                SUM(total_venta)::float AS total,
+                COUNT(*)::int AS ventas
+            FROM mventas
+            WHERE COALESCE(estado_venta, 'completada') = 'completada'
+            GROUP BY orden, dia
+            ORDER BY orden
+        `);
 
-        // 👇 AQUÍ ESTÁ LA SOLUCIÓN: Agregamos tendencia, categorias y stockEficiencia
+        const ventasPorCategoria = await pool.query(`
+            SELECT 
+                COALESCE(tp.des_tipo_producto, 'Sin categoría') AS categoria,
+                SUM(dv.subtotal)::float AS total
+            FROM dventas dv
+            INNER JOIN mventas mv ON dv.id_venta = mv.id_venta
+            INNER JOIN mproducto p ON dv.id_producto = p.id_producto
+            LEFT JOIN ctipoproducto tp ON p.id_tip_product = tp.id_tipo_producto
+            WHERE COALESCE(mv.estado_venta, 'completada') = 'completada'
+            GROUP BY categoria
+            ORDER BY total DESC
+            LIMIT 8
+        `);
+
+        const margenCategorias = await pool.query(`
+            SELECT 
+                COALESCE(tp.des_tipo_producto, 'Sin categoría') AS categoria,
+                SUM((dv.precio_unitario - COALESCE(p.p_costo, 0)) * dv.cantidad)::float AS utilidad,
+                SUM(dv.subtotal)::float AS venta
+            FROM dventas dv
+            INNER JOIN mventas mv ON dv.id_venta = mv.id_venta
+            INNER JOIN mproducto p ON dv.id_producto = p.id_producto
+            LEFT JOIN ctipoproducto tp ON p.id_tip_product = tp.id_tipo_producto
+            WHERE COALESCE(mv.estado_venta, 'completada') = 'completada'
+            GROUP BY categoria
+            ORDER BY utilidad DESC
+            LIMIT 8
+        `);
+
+        const lowStockProducts = await pool.query(`
+            SELECT
+                id_producto,
+                nombre,
+                cant_exist,
+                stock_min,
+                stock_max
+            FROM mproducto
+            WHERE cant_exist <= stock_min
+            ORDER BY cant_exist ASC, nombre ASC
+            LIMIT 10
+        `);
+
+        const agedProducts = await pool.query(`
+            SELECT
+                id_producto,
+                nombre,
+                cant_exist,
+                p_venta,
+                fec_registro,
+                CONCAT(EXTRACT(DAY FROM (CURRENT_DATE - fec_registro::date))::int, ' días') AS antiguedad
+            FROM mproducto
+            WHERE fec_registro::date <= CURRENT_DATE - INTERVAL '10 months'
+            ORDER BY fec_registro ASC
+            LIMIT 10
+        `);
+
+        const lowRotationProducts = await pool.query(`
+            SELECT
+                p.id_producto,
+                p.nombre,
+                p.cant_exist,
+                p.p_venta,
+                COALESCE(SUM(dv.cantidad), 0)::float AS ventas
+            FROM mproducto p
+            LEFT JOIN dventas dv ON p.id_producto = dv.id_producto
+            LEFT JOIN mventas mv ON dv.id_venta = mv.id_venta
+                AND COALESCE(mv.estado_venta, 'completada') = 'completada'
+                AND mv.fec_venta >= CURRENT_DATE - INTERVAL '60 days'
+            GROUP BY p.id_producto, p.nombre, p.cant_exist, p.p_venta
+            HAVING COALESCE(SUM(dv.cantidad), 0) <= 2
+            ORDER BY ventas ASC, p.cant_exist DESC
+            LIMIT 10
+        `);
+
+        const weakDays = await pool.query(`
+            SELECT
+                dia,
+                ROUND(AVG(total)::numeric, 2)::float AS promedio
+            FROM (
+                SELECT
+                    CASE EXTRACT(DOW FROM fec_venta)
+                        WHEN 0 THEN 'Domingo'
+                        WHEN 1 THEN 'Lunes'
+                        WHEN 2 THEN 'Martes'
+                        WHEN 3 THEN 'Miércoles'
+                        WHEN 4 THEN 'Jueves'
+                        WHEN 5 THEN 'Viernes'
+                        WHEN 6 THEN 'Sábado'
+                    END AS dia,
+                    fec_venta::date AS fecha,
+                    SUM(total_venta) AS total
+                FROM mventas
+                WHERE COALESCE(estado_venta, 'completada') = 'completada'
+                GROUP BY dia, fecha
+            ) ventas_dia
+            GROUP BY dia
+            ORDER BY promedio ASC
+            LIMIT 2
+        `);
+
+        const nuevos = await pool.query(`
+            SELECT 
+                nombre,
+                p_venta
+            FROM mproducto
+            ORDER BY fec_registro DESC
+            LIMIT 5
+        `);
+
+        const viejos = await pool.query(`
+            SELECT 
+                nombre,
+                p_venta
+            FROM mproducto
+            ORDER BY fec_registro ASC
+            LIMIT 5
+        `);
+
+        const ventasTotal = parseFloat(ventas.rows[0].total);
+        const comprasTotal = parseFloat(compras.rows[0].total);
+
         res.json({
             success: true,
-            ventas: parseFloat(v.rows[0].total),
-            compras: parseFloat(c.rows[0].total),
-            pedidos: parseInt(p.rows[0].total),
-            alertaStock: parseInt(s.rows[0].total),
-            utilidad: parseFloat(v.rows[0].total) - parseFloat(c.rows[0].total),
+
+            ventas: ventasTotal,
+            compras: comprasTotal,
+            utilidad: ventasTotal - comprasTotal,
+            pedidos: parseInt(pedidos.rows[0].total),
+            alertaStock: parseInt(stockCritico.rows[0].total),
+
+            totalVentasMes: parseFloat(totalVentasMes.rows[0].total),
+            totalVentasHoy: parseFloat(totalVentasHoy.rows[0].total),
+            ticketPromedio: parseFloat(ticketPromedio.rows[0].promedio),
+            productosActivos: parseInt(productosActivos.rows[0].total),
+
             topClientes: topClientes.rows,
-            topProveedores: topProv.rows,
+            topProveedores: topProveedores.rows,
             topArticulos: topArticulos.rows,
-            inventario: inventarioInfo.rows,
-            nuevos: nuevos.rows,
-            // Variables añadidas para que el Dashboard las pueda leer:
             tendencia: tendencia.rows,
-            categorias: categorias.rows,
-            stockEficiencia: stockEficiencia.rows
+
+            ventasPorHora: ventasPorHora.rows,
+            ventasPorDia: ventasPorDia.rows,
+            ventasPorCategoria: ventasPorCategoria.rows,
+            margenCategorias: margenCategorias.rows,
+
+            lowStockProducts: lowStockProducts.rows,
+            agedProducts: agedProducts.rows,
+            lowRotationProducts: lowRotationProducts.rows,
+            weakDays: weakDays.rows,
+
+            nuevos: nuevos.rows,
+            viejos: viejos.rows
         });
 
     } catch (error) {
-        console.error("❌ Error en Dashboard API:", error.message);
-        res.status(500).json({ success: false, error: error.message });
+        console.error('❌ Error en Dashboard BI API:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
     }
 });
-
 // ====================================================================
 // 7. API: CORTE DE CAJA
 // ====================================================================
