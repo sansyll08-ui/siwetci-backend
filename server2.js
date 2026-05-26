@@ -412,8 +412,26 @@ app.post('/api/productos', async (req, res) => {
         const id_ubicacion = await getOrInsertId('ubicacion', p.ubicacion_txt);
 
         const query = `INSERT INTO mproducto (clave_producto, codigo_interno, nombre, tamano, id_unidad, imagen_url, cant_exist, stock_min, stock_max, id_ubicacion, p_costo, p_venta, fec_caducidad, id_marca, id_tip_product, id_color, id_proveedor, id_estatus) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id_producto`;
-        const values = [p.clave_producto, p.codigo_interno || null, p.nombre, p.tamano, id_unidad, p.imagen_url || null, p.cant_exist || 0, p.stock_min || 5, p.stock_max || 100, id_ubicacion, p.p_costo, p.p_venta, p.fec_caducidad || null, id_marca, id_tip_product, id_color, p.id_proveedor, p.id_estatus || 1];
-
+        const values = [
+            p.clave_producto,
+            p.codigo_interno || p.clave_producto,
+            p.nombre,
+            p.tamano,
+            id_unidad,
+            p.imagen_url || null,
+            p.cant_exist || 0,
+            p.stock_min || 5,
+            p.stock_max || 100,
+            id_ubicacion,
+            p.p_costo,
+            p.p_venta,
+            p.fec_caducidad || null,
+            id_marca,
+            id_tip_product,
+            id_color,
+            p.id_proveedor || null,
+            p.id_estatus || 1
+        ];
         const result = await client.query(query, values);
         await client.query('COMMIT');
         await reestablecerSecuencia('mproducto', 'id_producto');
