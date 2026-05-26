@@ -1009,7 +1009,7 @@ app.get('/api/ventas', async (req, res) => {
                 v.total_venta AS total
             FROM mventas v
             ${where}
-            ORDER BY v.id_venta ASC
+            ORDER BY v.fec_venta ASC
             LIMIT 300
         `, values);
 
