@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors'); 
 const { Pool } = require('pg');
 const app = express();
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
 
 // ====================================================================
 // CONFIGURACIÓN DE SERVIDOR PARA LA NUBE (RENDER + FIREBASE)
@@ -18,8 +20,11 @@ const PORT = process.env.PORT || 3001;
 // 0. CONFIGURACIÓN DE BASE DE DATOS (SUPABASE)
 // ====================================================================
 const pool = new Pool({
-    connectionString: 'postgresql://postgres:M4rv1n$4nS3020@db.jhidmcagbndgfhomkyrz.supabase.co:5432/postgres',
-    host: 'db.jhidmcagbndgfhomkyrz.supabase.co', // <--- AGREGA ESTA LÍNEA
+    user: 'postgres',
+    host: 'db.jhidmcagbndgfhomkyrz.supabase.co',
+    database: 'postgres',
+    password: 'M4rv1n$4nS3020', // Asegúrate de que esta sea la correcta
+    port: 5432,
     ssl: {
         rejectUnauthorized: false
     }
