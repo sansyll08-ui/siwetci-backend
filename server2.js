@@ -1625,7 +1625,7 @@ app.put('/api/productos/:id', async (req, res) => {
                 id_color = $16,
                 id_proveedor = $17,
                 id_estatus = $18,
-                fec_modificacion = CURRENT_TIMESTAMP
+                fec_modifica = CURRENT_TIMESTAMP
             WHERE id_producto = $19
             `,
             [
