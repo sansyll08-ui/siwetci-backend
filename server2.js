@@ -21,7 +21,7 @@ const pool = new Pool({
     // El usuario debe incluir el prefijo del proyecto
     user: 'postgres.jhidmcagbndgfhomkyrz', 
     password: 'M4rv1n$4nS3020',
-    host: 'aws-0-us-east-1.pooler.supabase.com', 
+    host: 'db.jhidmcagbndgfhomkyrz.supabase.co', 
     database: 'postgres',
     port: 6543,
     ssl: {
